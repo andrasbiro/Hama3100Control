@@ -3,7 +3,9 @@
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>   
+#include <EEPROM.h>
 
+#include <WiFiClient.h>
 #include <ESP8266HTTPClient.h>
 
 #include <ArduinoOTA.h>
@@ -21,8 +23,8 @@
 String urlbase;
 String urlauth;
 WiFiManager wifiManager;
-WiFiManagerParameter radioIpManager("radioip", "IP of radio", "192.168.1.10", 20);
-
+WiFiManagerParameter radioIpManager("radioip", "IP/host of radio", "192.168.1.250", 100);
+char radioIp[100];
 
 Encoder encoder(ENCODER_A, ENCODER_B);
 
@@ -45,25 +47,28 @@ String connect(String command, String parameter, String value){
     url += "/"+parameter+urlauth;
   }
   String payload = "";
+  WiFiClient wclient;
   HTTPClient http;
-  http.begin(url);
+  http.begin(wclient, url);
   int httpCode = http.GET();
   // httpCode will be negative on error
   if( httpCode == HTTP_CODE_OK) {
     payload = http.getString();
-  }
+  } 
   http.end();
   return payload;
 }
 
 void getSessionId(){
   urlauth = "?pin=1234";
+  //it looks like we don't need this anymore - it always returns with internal server error
+  //however, the control works with just the pin
   String payload = connect("CREATE_SESSION", "", "");
   if (payload.length() > 0){
     if ( xmlTakeParam(payload, "status") == "FS_OK" ) {
       urlauth =  "?pin=1234&sid=" +  xmlTakeParam(payload, "sessionId");
-    }
-  }
+    } 
+  } 
 }
 
 long getLength(){
@@ -129,30 +134,43 @@ void updateInput(){
 }
 
 void reconnect(){
-  urlbase = "http://" + String(radioIpManager.getValue()) + "/fsapi/";
+  urlbase = "http://" + String(radioIp) + "/fsapi/";
 
   Serial.println("Using url " + urlbase);
   getSessionId();
   Serial.println("Using auth " + urlauth);
 }
 
+void saveConfigCallback(){
+  strncpy(radioIp, radioIpManager.getValue(), sizeof(radioIp));
+  Serial.println("Save IP " + String(radioIp));
+  EEPROM.put(0, radioIp);
+  EEPROM.commit();
+}
 
 void setup() {
   pinMode(BUTTON, INPUT_PULLUP);
+  EEPROM.begin(sizeof(radioIp));
   Serial.begin(115200);
   Serial.println("booted");
   wifiManager.addParameter(&radioIpManager);
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
   wifiManager.autoConnect("AutoConnectAP");
+  EEPROM.get(0, radioIp);
+  EEPROM.end();
+  Serial.println("IP loaded: " + String(radioIp));
 
   ArduinoOTA.setHostname ("Hama3100Control");
   ArduinoOTA.begin();
-  reconnect();
-
+  urlauth = "";
 }
 
 void loop() {
   ArduinoOTA.handle();
   updateInput();
+  if( urlauth.equals("") || pressLength > 0){
+    reconnect();
+  }
   if ( encoderChange ) {
       long len = getLength();
       long pos = getPos();
@@ -165,9 +183,7 @@ void loop() {
       Serial.println("LEN:"+String(len)+"POS:"+String(pos)+"NPOS"+String(newpos));
       setPos(newpos);
   }
-  if ( pressLength > 0 ){
-    reconnect();
-  }
+
   encoderChange = pressLength = 0;
   delay(100);
 }
